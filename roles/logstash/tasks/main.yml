@@ -1,0 +1,88 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: False
+  tasks:
+    - name: Launch Instances
+      ec2:
+        key_name: aws2-master
+        instance_type: t2.micro
+        image: ami-a58d0dc5
+        wait: yes
+        group: launch-wizard-1
+        count: 3
+        vpc_subnet_id: subnet-096fc340
+        assign_public_ip: yes
+        region: us-west-2
+        instance_tags: 
+          type: elasticsearch
+      register: ec2_host
+
+    - name: globally register this
+      set_fact: ec2_output={{ec2_host}}
+  
+    - name: Wait for SSH
+      wait_for:
+        host: "{{ item.public_ip}}"
+        port: 22
+        delay: 10
+        timeout: 320
+        state: started
+      with_items: "{{ ec2_host.instances }}"
+
+    - name: Add temp host
+      add_host:
+        name: "{{ item.public_ip }}"
+        groups: dynamic_hosts
+        ansible_ssh_private_key_file: '/root/aws2-master.pem'
+        ansible_ssh_user: ubuntu
+      with_items: "{{ ec2_host.instances }}"
+
+- hosts: dynamic_hosts
+  become: yes
+  gather_facts: no
+  tasks: 
+    - name: Install Python
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+- hosts: dynamic_hosts
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Update apt keys
+      apt_key:
+        url: "https://artifacts.elastic.co/GPG-KEY-elasticsearch"
+        state: present 
+    
+    - name: Update Apt Repo
+      apt_repository:
+        repo: deb https://artifacts.elastic.co/packages/5.x/apt stable main
+        state: present
+
+    - name: Install relevant packages
+      package: name={{item}} state=present
+      with_items:
+        - apt-transport-https
+        - openjdk-8-jre
+        - tmux
+        - dstat
+        - elasticsearch
+
+    - name: Setup Elasticsearch config
+      template:
+        src: /root/jasonansible/elasticsearch/templates/elasticsearch.yml.j2
+        dest: /etc/elasticsearch/elasticsearch.yml
+        owner: elasticsearch
+        group: elasticsearch
+      notify: 
+        - restart elasticsearch
+
+  handlers: 
+   - name: restart elasticsearch
+     service: name=elasticsearch state=restarted
+
+
+
+
+
+
